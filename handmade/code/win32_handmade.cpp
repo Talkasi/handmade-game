@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <stdint.h>
 
 #define internal static
 #define global_variable static
@@ -7,17 +8,29 @@
 global_variable bool Running;
 
 global_variable BITMAPINFO BitmapInfo;
-global_variable HBITMAP BitmapHandle;
-global_variable HDC BitmapDeviceContext;
-global_variable void *BitmapMemory;
+global_variable LPVOID BitmapMemory;
+global_variable LONG BitmapHeight;
+global_variable LONG BitmapWidth;
+
 
 internal void
-Win32ResizeDIBSection(int Width, int Height) {
-    if (BitmapHandle)
-        DeleteObject(BitmapHandle);
+RenderWeirdGradient(uint8_t Xoffset, uint8_t Yoffset) {
+    uint32_t *Pitch = (uint32_t *)BitmapMemory;
+    for (LONG i = 0; i < BitmapHeight; ++i) {
+        for (LONG j = 0; j < BitmapWidth; ++j) {
+            uint8_t Green = Xoffset + i;
+            uint8_t Blue = Yoffset + j;
+            uint8_t Red = i - j;
+            *Pitch++ = (Red << 16) | (Green << 8) | Blue;
+        }
+    }
+}
 
-    if (!BitmapDeviceContext)
-        BitmapDeviceContext = CreateCompatibleDC(0);
+
+internal void
+Win32ResizeDIBSection(LONG Width, LONG Height) {
+    if (BitmapMemory)
+        VirtualFree(BitmapMemory, 0, MEM_RELEASE);
 
     BitmapInfo.bmiHeader.biSize = sizeof(BitmapInfo.bmiHeader);
     BitmapInfo.bmiHeader.biWidth = Width;
@@ -26,18 +39,32 @@ Win32ResizeDIBSection(int Width, int Height) {
     BitmapInfo.bmiHeader.biBitCount = 32;
     BitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    BitmapHandle = CreateDIBSection(
-        BitmapDeviceContext, &BitmapInfo, 
-        DIB_RGB_COLORS, 
-        &BitmapMemory, 
-        0, 0);
+    BitmapHeight = Height;
+    BitmapWidth = Width;
+
+    int BytesPerPixel = 4;
+    SIZE_T BitmapMemorySize = BytesPerPixel * Width * Height;
+    BitmapMemory = VirtualAlloc(0, BitmapMemorySize, MEM_COMMIT, PAGE_READWRITE);
 }
 
 internal void
-Win32UpdateWindow(HDC DeviceContext, int X, int Y, int Width, int Height) {
+Win32UpdateWindow(HDC DeviceContext, RECT *ClientRect, LONG X, LONG Y, LONG Width, LONG Height) {
+    /*
+        RR GG BB xx
+        LE: 0xxxBBGGRR
+        So:
+        BB GG RR xx
+    */
+    LONG ClientWidth = ClientRect->right - ClientRect->left;
+    LONG ClientHeight = ClientRect->bottom - ClientRect->top;
+
+    //RenderWeirdGradient();
+
     StretchDIBits(DeviceContext, 
-                  X, Y, Width, Height, 
-                  X, Y, Width, Height, 
+//                  X, Y, Width, Height, 
+//                  X, Y, Width, Height, 
+                  0, 0, ClientWidth, ClientHeight,
+                  0, 0, BitmapWidth, BitmapHeight,
                   BitmapMemory, &BitmapInfo, 
                   DIB_RGB_COLORS, SRCCOPY);
 }
@@ -75,11 +102,13 @@ LRESULT Wndproc(HWND Window, UINT Message,
         {
             PAINTSTRUCT Paint;
             HDC DeviceContext = BeginPaint(Window, &Paint);
-            int X = Paint.rcPaint.left;
-            int Y = Paint.rcPaint.top;
-            int Width = Paint.rcPaint.right - Paint.rcPaint.left;
-            int Height = Paint.rcPaint.bottom - Paint.rcPaint.top;
-            Win32UpdateWindow(DeviceContext, X, Y, Width, Height);
+            LONG X = Paint.rcPaint.left;
+            LONG Y = Paint.rcPaint.top;
+            LONG Width = Paint.rcPaint.right - Paint.rcPaint.left;
+            LONG Height = Paint.rcPaint.bottom - Paint.rcPaint.top;
+            RECT ClientRect;
+            GetClientRect(Window, &ClientRect);
+            Win32UpdateWindow(DeviceContext, &ClientRect, X, Y, Width, Height);
             EndPaint(Window, &Paint);
         } break;
 
@@ -103,24 +132,38 @@ int CALLBACK WinMain(HINSTANCE Instance, HINSTANCE PrevInstance,
     WindowClass.lpszClassName = "HandmadeGameWindowClass";
 
     if (RegisterClassA(&WindowClass)) {
-        HWND WindowHandle = CreateWindowEx(0, WindowClass.lpszClassName, "HandmadeHero", WS_OVERLAPPEDWINDOW|WS_VISIBLE,
+        HWND Window = CreateWindowEx(0, WindowClass.lpszClassName, "HandmadeHero", WS_OVERLAPPEDWINDOW|WS_VISIBLE,
                   CW_USEDEFAULT, CW_USEDEFAULT,
                   CW_USEDEFAULT, CW_USEDEFAULT, 
                   0, 0, Instance, 0);
 
-        if (WindowHandle) {
+        if (Window) {
 
             MSG Message;
             Running = true;
+            uint8_t Xo = 0;
+            uint8_t Yo = 0;
             while (Running) {
-                BOOL MessageResult = GetMessage(&Message, 0, 0, 0);
-                if (MessageResult > 0) {
+                ++Xo;
+                ++Yo;
+                while (PeekMessageA(&Message, 0, 0, 0, PM_REMOVE)) {
+                    if (Message.message == WM_QUIT)
+                        Running = false;
+
                     TranslateMessage(&Message);
                     DispatchMessageA(&Message);
                 }
-                else {
-                    break;
-                }
+                
+                HDC DeviceContext = GetDC(Window);
+                RECT ClientRect;
+                GetClientRect(Window, &ClientRect);
+
+                RenderWeirdGradient(Xo, Yo);
+                LONG WindowWidth = ClientRect.right - ClientRect.left;
+                LONG WindowHeight = ClientRect.top - ClientRect.bottom;
+
+                Win32UpdateWindow(DeviceContext, &ClientRect, 0, 0, WindowWidth, WindowHeight);
+                ReleaseDC(Window, DeviceContext);
             }
         }
         else
