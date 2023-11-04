@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include <xinput.h>
+#include <dsound.h>
 
 #define internal static
 #define global_variable static
@@ -42,15 +43,75 @@ XINPUT_SET_STATE(XInputSetStateStub) {
 global_variable xinput_set_state *XInputSetState_ = XInputSetStateStub;
 #define XInputSetState XInputSetState_
 
+#define DIRECT_SOUND_CREATE(name) HRESULT WINAPI name(LPCGUID pcGuidDevice, LPDIRECTSOUND *ppDS, LPUNKNOWN pUnkOuter)
+typedef DIRECT_SOUND_CREATE(direct_sound_create);
+
 internal void 
 Win32LoadXInput(void) {
     HMODULE XInputLib = LoadLibraryA("xinput1_4.dll");
-    if (XInputLib)
+    if (!XInputLib)
         XInputLib = LoadLibraryA("xinput1_3.dll");
     
     if (XInputLib) {
         XInputGetState = (xinput_get_state *)GetProcAddress(XInputLib, "XInputGetState");
         XInputSetState = (xinput_set_state *)GetProcAddress(XInputLib, "XInputSetState");
+    }
+}
+
+internal void   
+Win32InitSound(HWND Window, int32_t SamplesPerSecond, int32_t BufferSize) {
+    HMODULE DSoundLibrary = LoadLibraryA("dsound.dll");
+    if (DSoundLibrary) {
+        direct_sound_create *DirectSoundCreate = (direct_sound_create *)
+            GetProcAddress(DSoundLibrary, "DirectSoundCreate");
+
+        LPDIRECTSOUND DirectSound;
+        if (DirectSoundCreate && SUCCEEDED(DirectSoundCreate(0, &DirectSound, 0))) {
+            WAVEFORMATEX WaveFormat = {};
+            WaveFormat.wFormatTag = WAVE_FORMAT_PCM;
+            WaveFormat.nChannels = 2;
+            WaveFormat.wBitsPerSample = 16;
+            WaveFormat.nSamplesPerSec = SamplesPerSecond;
+            WaveFormat.nBlockAlign = (WaveFormat.nChannels * WaveFormat.wBitsPerSample) / 8;
+            WaveFormat.nAvgBytesPerSec = WaveFormat.nSamplesPerSec*WaveFormat.nBlockAlign;
+            WaveFormat.cbSize = 0;
+
+            if (SUCCEEDED(DirectSound->SetCooperativeLevel(Window, DSSCL_PRIORITY))) {
+                DSBUFFERDESC BufferDescription = {};
+                BufferDescription.dwSize = sizeof(BufferDescription);
+                BufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+
+                LPDIRECTSOUNDBUFFER PrimaryBuffer;
+                if (SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0))) {
+                    if (SUCCEEDED(PrimaryBuffer->SetFormat(&WaveFormat))) {
+
+                    } else {
+
+                    }
+                } else {
+
+                }
+            } else {
+                // Diagnostic
+            }
+
+            DSBUFFERDESC BufferDescription = {};
+            BufferDescription.dwSize = sizeof(BufferDescription);
+            BufferDescription.dwFlags = 0;
+            BufferDescription.dwBufferBytes = BufferSize;
+            BufferDescription.lpwfxFormat = &WaveFormat;
+            LPDIRECTSOUNDBUFFER SecondaryBuffer;
+            if (SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &SecondaryBuffer, 0))) {
+
+            } else {
+
+            }
+
+        } else {
+
+        }
+    } else {
+
     }
 }
 
@@ -97,7 +158,7 @@ Win32ResizeDIBSection(bitmap_buff *GlobalBitmap, LONG Width, LONG Height) {
 
     int BytesPerPixel = 4;
     SIZE_T BitmapMemorySize = BytesPerPixel * GlobalBitmap->Width * GlobalBitmap->Height;
-    GlobalBitmap->Memory = VirtualAlloc(0, BitmapMemorySize, MEM_COMMIT, PAGE_READWRITE);
+    GlobalBitmap->Memory = VirtualAlloc(0, BitmapMemorySize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
 }
 
 internal void
@@ -113,8 +174,7 @@ Win32UpdateWindow(HDC DeviceContext, LONG WindowWidth, LONG WindowHeight,
 }
 
 LRESULT Wndproc(HWND Window, UINT Message,
-  WPARAM wParam, LPARAM lParam)
-{
+  WPARAM wParam, LPARAM lParam) {
     LRESULT Result = 0;
     switch(Message) {
     case WM_CLOSE:
@@ -212,8 +272,7 @@ LRESULT Wndproc(HWND Window, UINT Message,
 }
 
 int CALLBACK WinMain(HINSTANCE Instance, HINSTANCE PrevInstance,
-                     LPSTR CommandLine, int ShowCode)
-{   
+                     LPSTR CommandLine, int ShowCode) {   
     WNDCLASS WindowClass = {};
 
     Win32ResizeDIBSection(&GlobalBitmap, 1280, 720);
@@ -231,6 +290,10 @@ int CALLBACK WinMain(HINSTANCE Instance, HINSTANCE PrevInstance,
 
         if (Window) {
             MSG Message;
+            HDC DeviceContext = GetDC(Window);
+
+            Win32InitSound(Window, 48000, 48000 * sizeof(int16_t) * 2);
+
             GlobalRunning = true;
             while (GlobalRunning) {
                 //++Xo;
