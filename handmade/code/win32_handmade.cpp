@@ -23,6 +23,7 @@ window_dimension {
 
 global_variable bool GlobalRunning;
 global_variable bitmap_buff GlobalBitmap;
+global_variable LPDIRECTSOUNDBUFFER GlobalSoundBuffer;
 
 uint8_t Xo = 0;
 uint8_t Yo = 0;
@@ -84,7 +85,7 @@ Win32InitSound(HWND Window, int32_t SamplesPerSecond, int32_t BufferSize) {
                 LPDIRECTSOUNDBUFFER PrimaryBuffer;
                 if (SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &PrimaryBuffer, 0))) {
                     if (SUCCEEDED(PrimaryBuffer->SetFormat(&WaveFormat))) {
-
+                        OutputDebugStringA("Buffer1 set\n");
                     } else {
 
                     }
@@ -100,9 +101,8 @@ Win32InitSound(HWND Window, int32_t SamplesPerSecond, int32_t BufferSize) {
             BufferDescription.dwFlags = 0;
             BufferDescription.dwBufferBytes = BufferSize;
             BufferDescription.lpwfxFormat = &WaveFormat;
-            LPDIRECTSOUNDBUFFER SecondaryBuffer;
-            if (SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &SecondaryBuffer, 0))) {
-
+            if (SUCCEEDED(DirectSound->CreateSoundBuffer(&BufferDescription, &GlobalSoundBuffer, 0))) {
+                OutputDebugStringA("Buffer2 set\n");
             } else {
 
             }
@@ -199,28 +199,24 @@ LRESULT Wndproc(HWND Window, UINT Message,
             switch (VKCode) {
             case VK_LEFT:
             case 'A':
-            case 'a':
                 {
                     Yo += 10;
                 } break;
 
             case VK_DOWN:
             case 'S':
-            case 's':
                 {
                     Xo -= 10;
                 } break;
 
             case VK_RIGHT:
             case 'D':
-            case 'd':
                 {
                     Yo -= 10;
                 } break;
 
             case VK_UP:
             case 'W':
-            case 'w':
                 {
                     Xo += 10;
                 } break;
@@ -233,6 +229,13 @@ LRESULT Wndproc(HWND Window, UINT Message,
             case VK_SPACE:
                 {
 
+                } break;
+
+            case VK_F4:
+                {
+                    bool IsAltKeyPressed = ((lParam & (1 << 29)) != 0);
+                    if (IsAltKeyPressed)
+                        GlobalRunning = false;
                 } break;
             }
         } break;
@@ -276,6 +279,7 @@ int CALLBACK WinMain(HINSTANCE Instance, HINSTANCE PrevInstance,
     WNDCLASS WindowClass = {};
 
     Win32ResizeDIBSection(&GlobalBitmap, 1280, 720);
+    Win32LoadXInput();
 
     WindowClass.style = CS_OWNDC|CS_VREDRAW|CS_HREDRAW;
     WindowClass.lpfnWndProc = Wndproc;
@@ -292,11 +296,20 @@ int CALLBACK WinMain(HINSTANCE Instance, HINSTANCE PrevInstance,
             MSG Message;
             HDC DeviceContext = GetDC(Window);
 
-            Win32InitSound(Window, 48000, 48000 * sizeof(int16_t) * 2);
+            bool SoundPlaying = false;
+            int32_t SamplesPerSecond = 48000;
+            int Hz = 256;
+            int ToneSound = 3000;
+            uint32_t RunningSampleIndex = 0;
+            int SquareWavePeriod = SamplesPerSecond / Hz;
+            int HalfSquareWacwPeriod = SquareWavePeriod / 2;
+            int BytesPerSample = sizeof(int16_t) * 2;
+            int SoundBufferSize = SamplesPerSecond * BytesPerSample;
+
+            Win32InitSound(Window, SamplesPerSecond, SamplesPerSecond * sizeof(int16_t) * 2);
 
             GlobalRunning = true;
             while (GlobalRunning) {
-                //++Xo;
                 while (PeekMessageA(&Message, 0, 0, 0, PM_REMOVE)) {
                     if (Message.message == WM_QUIT)
                         GlobalRunning = false;
@@ -332,15 +345,60 @@ int CALLBACK WinMain(HINSTANCE Instance, HINSTANCE PrevInstance,
                     }
                 }
 
+                // Sound test
+                if (!SoundPlaying) {
+                    GlobalSoundBuffer->Play(0, 0, DSBPLAY_LOOPING);
+                    SoundPlaying = true;
+                }
+
+                DWORD PlayCursor;
+                DWORD WriteCursor;
+                if (SUCCEEDED(GlobalSoundBuffer->GetCurrentPosition(&PlayCursor, &WriteCursor))) {
+                    DWORD ByteToLock = RunningSampleIndex * BytesPerSample % SoundBufferSize;
+                    DWORD BytesToWrite;
+                    if (ByteToLock == PlayCursor)
+                        BytesToWrite = SoundBufferSize;
+                    else if (ByteToLock > PlayCursor) {
+                        BytesToWrite = (SoundBufferSize - ByteToLock);
+                        BytesToWrite += PlayCursor;
+                    } else
+                        BytesToWrite = PlayCursor - ByteToLock;
+
+                    VOID *AudioPtr1;
+                    DWORD Region1Size;
+                    VOID *AudioPtr2;
+                    DWORD Region2Size;
+                    if (SUCCEEDED(GlobalSoundBuffer->Lock(ByteToLock, BytesToWrite, 
+                                            &AudioPtr1, &Region1Size, &AudioPtr2, &Region2Size, 0))) {
+                        int16_t *SampleOut = (int16_t *)AudioPtr1;
+                        DWORD Region1SampleCount = Region1Size / BytesPerSample;
+                        DWORD Region2SampleCount = Region2Size / BytesPerSample;
+                        for (DWORD SampleIndex = 0; SampleIndex < Region1SampleCount; ++SampleIndex) {
+                            int16_t SampleValue = ((RunningSampleIndex / HalfSquareWacwPeriod) % 2) ? ToneSound : -ToneSound;
+                            *SampleOut++ = SampleValue;
+                            *SampleOut++ = SampleValue;
+                            ++RunningSampleIndex;
+                        }
+
+                        SampleOut = (int16_t *)AudioPtr2;
+                        for (DWORD SampleIndex = 0; SampleIndex < Region2SampleCount; ++SampleIndex) {
+                            int16_t SampleValue = ((RunningSampleIndex / HalfSquareWacwPeriod) % 2) ? ToneSound : -ToneSound;
+                            *SampleOut++ = SampleValue;
+                            *SampleOut++ = SampleValue;
+                            ++RunningSampleIndex;
+                        }
+
+                        GlobalSoundBuffer->Unlock(&AudioPtr1, Region1Size, &AudioPtr2, Region2Size);
+                    }
+                }
+
+                // Rendering test
                 RenderWeirdGradient(&GlobalBitmap, Xo, Yo);
-
-                HDC DeviceContext = GetDC(Window);
-
                 window_dimension Dimension = GetWindowDimention(Window);
                 Win32UpdateWindow(DeviceContext, Dimension.Width, Dimension.Height, &GlobalBitmap, 
                                   0, 0, Dimension.Width, Dimension.Height);
-                ReleaseDC(Window, DeviceContext);
             }
+            ReleaseDC(Window, DeviceContext);
         }
         else
         {
